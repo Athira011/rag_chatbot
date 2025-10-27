@@ -1,0 +1,7 @@
+venv/
+*.docx
+*.pdf
+chroma_db/
+vectorstore/
+__pycache__/
+*.pyc
