@@ -1,12 +1,12 @@
 import os
 import streamlit as st
-
 from langchain_ollama import ChatOllama
-from langchain.chains import RetrievalQA
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
-from langchain_community.document_loaders import PyPDFLoader, PDFPlumberLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 
 # ----------------------
 # Streamlit UI
@@ -15,15 +15,14 @@ st.title("RAG Chatbot with Ollama + Chroma")
 
 uploaded_file = st.file_uploader("Upload a DOCX or PDF file", type=["docx", "pdf"])
 
-if uploaded_file is not None:
-    # Save uploaded file temporarily
+if uploaded_file:
     file_ext = os.path.splitext(uploaded_file.name)[1]
     file_path = "temp_upload" + file_ext
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     st.success(f"{uploaded_file.name} uploaded successfully!")
 
-    # Load document based on file type
+    # Load document
     if file_ext == ".docx":
         loader = Docx2txtLoader(file_path)
     elif file_ext == ".pdf":
@@ -34,29 +33,40 @@ if uploaded_file is not None:
 
     documents = loader.load()
 
-    # Split text into chunks
+    # Split text
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     docs = text_splitter.split_documents(documents)
 
     # Create embeddings
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")  # CPU-friendly
-
-    # Build Chroma vectorstore
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectordb = Chroma.from_documents(docs, embeddings)
 
-    # Initialize Ollama chat model
-    llm = ChatOllama(model="llama2")  # Change model if needed
+    # Initialize Ollama LLM
+    llm = ChatOllama(model="llama2")
 
-    # Create RAG QA chain
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectordb.as_retriever()
+    # Prompt template
+    prompt = ChatPromptTemplate.from_template(
+        "Answer the question based only on the context below.\n\nContext:\n{context}\n\nQuestion: {question}"
     )
 
-    # User question input
+    # Build retrieval-based pipeline manually
+    retriever = vectordb.as_retriever()
+
+    # The new 1.x style RAG pipeline
+    from langchain_core.runnables import RunnableLambda, RunnableMap
+
+    def combine_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    rag_chain = (
+        RunnableMap({"context": retriever | RunnableLambda(combine_docs), "question": RunnablePassthrough()})
+        | prompt
+        | llm
+    )
+
+    # Ask question
     question = st.text_input("Ask a question about the document:")
 
     if question:
-        answer = qa.run(question)
-        st.write("**Answer:**", answer)
+        result = rag_chain.invoke(question)
+        st.write("**Answer:**", result.content)
